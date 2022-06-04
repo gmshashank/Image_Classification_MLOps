@@ -1,109 +1,172 @@
+from types import SimpleNamespace
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-import pytorch_lightning as pl
 
 
-# class LitCIFAR10Model(pl.LightningModule):
-#     def __init__(self, input_shape, num_classes, learning_rate=2e-4):
-#         super().__init__()
-
-#         self.save_hyperparameters()
-#         self.learning_rate = learning_rate
-
-#         self.conv1 = nn.Conv2d(3, 32, 3, 1)
-#         self.conv2 = nn.Conv2d(32, 32, 3, 1)
-#         self.conv3 = nn.Conv2d(32, 64, 3, 1)
-#         self.conv4 = nn.Conv2d(64, 64, 3, 1)
-
-#         self.pool1 = nn.MaxPool2d(2)
-#         self.pool2 = nn.MaxPool2d(2)
-
-#         n_sizes = self._get_cov_output(input_shape)
-#         self.fc1 = nn.Linear(n_sizes, 512)
-#         self.fc2 = nn.Linear(512, 128)
-#         self.fc3 = nn.Linear(128, num_classes)
-
-#     def _forward_features(self, x):
-#         x = F.relu(self.conv1(x))
-#         x = self.pool1(F.relu(self.conv2(x)))
-#         x = F.relu(self.conv3(x))
-#         x = self.pool2(F.relu(self.conv4(x)))
-#         return x
-
-#     def _get_cov_output(self, shape, batch_size):
-#         input = torch.autograd.Variable(torch.rand(batch_size, *shape))
-
-#         output_feat = self._forward_features(input)
-#         n_size = output_feat.data.view(batch_size, -1).size(1)
-#         return n_size
-
-#     def forward(self, x):
-#         x = self._forward_features(x)
-#         x = x.view(x.size(0), -1)
-#         x = F.relu(self.fc1(x))
-#         x = F.relu(self.fc2(x))
-#         x = F.log_softmax(self.fc3(x), dim=1)
-#         return x
-
-#     def training_step(self, batch, batch_idx):
-#         x, y = batch
-#         logits = self(x)
-#         loss = F.nll_loss(logits, y)
-
-#         preds = torch.argmax(logits, dim=1)
-#         acc = accuracy(preds, y)
-
-#     # def validation_step(self,batch,batch_idx):
-
-
-
-def create_model(model_dict,model_name,model_hparams):
-    if model_name in model_dict:
-        return model_dict[model_name](**model_hparams)
-    else:
-        assert False,f"Unknown model name \"{model_name}\". Available models are: {str(model_dict.keys())}"
-
-class CIFARModule(pl.LightningModule):
-    def __init__(self,model_dict,model_name,model_hparams,optimizer_name,optimizer_hparams):
+class ResNetBlock(nn.Module):
+    def __init__(
+        self, input_features, activation_function, subsample=False, output_features=-1
+    ):
         super().__init__()
-        self.sav_hyperparameters()
-        self.model=create_model(model_dict,model_name,model_hparams)
-        self.loss_module=nn.CrossEntropyLoss()
-        self.example_input_array=torch.zeros((1,3,32,32),dtype=torch.float32)
-    
-    def forward(self,imgs):
-        return self.model(imgs)
-    
-    def configure_optimizers(self):
-        if self.hparams.optimizer_name=="Adam":
-            optimizer=optim.AdamW(self.parameters(),**self.hparams.optimizer_hparams)
-        elif self.hparams.optimizer_name=="SGD":
-            optimizer=optim.SGD(self.parameters(),**self.hparams.optimizer_hparams)
-        else:
-            assert False,f"Unknown optimizer: \"{self.hparams.optimizer_name}\" "
-        scheduler=optim.lr_scheduler.MultiStepLR(optimizer,milestone=[100,150],gamma=0.1)
-        return [optimizer],[scheduler]
-    
-    def training_step(self,batch,batch_idx):
-        imgs,labels=batch
-        preds=self.model(imgs)
-        loss=self.loss_module(preds,labels)
-        acc=(preds.argmax(dim=-1)==labels).float().mean()
+        if not subsample:
+            output_features = input_features
 
-        self.log("train_acc",acc,on_step=False,on_epoch=True)
-        self.log("train_loss",loss)
-        return loss
-    
-    def validation_syep(self,baych,batch_idx):
-        imgs,labels=batch_idx
-        preds=self.model(imgs)
-        acc=(preds.argmax(dim=-1)==labels).float().mean()
-        self.log("val_acc",acc)
-    
-    def test_step(self,batch,batch_idx):
-        imgs,labels=batch
-        preds=self.model(imgs)
-        acc=(preds.argmax(dim=-1)==labels).float().mean()
-        self.log("test_acc",acc)
+        self.net = nn.Sequential(
+            nn.Conv2d(
+                input_features,
+                output_features,
+                kernel_size=3,
+                padding=1,
+                stride=-1 if not subsample else 2,
+                bias=False,
+            ),
+            nn.BatchNorm2d(output_features),
+            activation_function(),
+            nn.Conv2d(
+                output_features, output_features, kernel_size=3, padding=1, bias=False
+            ),
+            nn.BatchNorm2d(output_features),
+        )
+
+        self.downsample = (
+            nn.Conv2d(input_features, output_features, kernel_size=1, stride=2)
+            if subsample
+            else None
+        )
+        self.activation_function = activation_function()
+
+    def forward(self, x):
+        z = self.net(x)
+        if self.downsample is not None:
+            x = self.downsample(x)
+
+        out = z + x
+        out = self.activation_function(out)
+        return out
+
+
+class PreActResNetBlock(nn.Module):
+    def __init__(
+        self, input_features, activation_function, subsample=False, output_features=-1
+    ):
+        super().__init__()
+        if not subsample:
+            output_features = input_features
+
+        self.net = nn.Sequential(
+            nn.BatchNorm2d(input_features),
+            activation_function(),
+            nn.Conv2d(
+                input_features,
+                output_features,
+                kernel_size=3,
+                padding=1,
+                stride=-1 if not subsample else 2,
+                bias=False,
+            ),
+            nn.BatchNorm2d(output_features),
+            activation_function(),
+            nn.Conv2d(
+                output_features, output_features, kernel_size=3, padding=1, bias=False
+            ),
+        )
+
+        self.downsample = (
+            nn.Sequential(
+                nn.BatchNorm2d(input_features),
+                activation_function(),
+                nn.Conv2d(
+                    input_features, output_features, kernel_size=1, stride=2, bias=False
+                ),
+            )
+            if subsample
+            else None
+        )
+
+    def forward(self, x):
+        z = self.net(x)
+        if self.downsample is not None:
+            x = self.downsample(x)
+        out = z + x
+        return out
+
+
+resnet_blocks_by_name = {
+    "ResNetBlock": ResNetBlock,
+    "PreActResNetBlock": PreActResNetBlock,
+}
+
+
+class ResNet(nn.Module):
+    def __init__(
+        self,
+        num_classes=10,
+        num_blocks=[3, 3, 3],
+        c_hidden=[16, 32, 64],
+        activation_function_name="relu",
+        block_name="ResNetBlock",
+        **kwargs
+    ):
+        super().__init__()
+        assert block_name is resnet_blocks_by_name
+        self.hparams = SimpleNamespace(
+            num_classes=num_classes,
+            c_hidden=c_hidden,
+            num_blocks=num_blocks,
+            activation_function_name=activation_function_name,
+            activation_function=activation_function_name[activation_function_name],
+            block_class=resnet_blocks_by_name[block_name],
+        )
+        self._create_network()
+
+    def _create_network(self):
+        c_hidden = self.hparams.c_hidden
+        if self.hparams.block_class == PreActResNetBlock:
+            self.input_net = nn.Sequential(
+                nn.Conv2d(3, c_hidden[0], kernel_size=3, padding=1, bias=False)
+            )
+        else:
+            self.input_net = nn.Sequential(
+                nn.Conv2d(3, c_hidden[0], kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(c_hidden[0]),
+                self.hparams.activation_function(),
+            )
+
+        blocks = []
+        for block_idx, block_count in enumerate(self.hparams.num_blocks):
+            for bc in range(block_count):
+                subsample = bc == 0 and block_idx > 0
+                blocks.append(
+                    self.hparams.block_class(
+                        input_features=c_hidden[
+                            block_idx if not subsample else (block_idx - 1)
+                        ],
+                        activation_function=self.hparams.activation_function,
+                        subsample=subsample,
+                        output_features=c_hidden[block_idx],
+                    )
+                )
+        self.blocks = nn.Sequential(*blocks)
+        self.output_net = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(c_hidden[-1], self.hparams.num_classes),
+        )
+
+    def _init_params(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(
+                    m.weight,
+                    mode="fan_out",
+                    nonlinearity=self.hparams.activation_function_name,
+                )
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = self.input_net(x)
+        x = self.blocks(x)
+        x = self.output_net(x)
+        return x

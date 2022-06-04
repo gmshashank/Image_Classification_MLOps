@@ -9,14 +9,16 @@ from torchvision.datasets import CIFAR10
 from torchvision import transforms
 
 import pytorch_lightning as pl
+
 # from pytorch_lightning import Trainer
 
-from pytorch_lightning.callbacks import LearningRateMonitor,ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 
-from step1_project_setup.model import CIFARModule
+from step1_project_setup.pl_model import CIFARModule
 
 DATASET_PATH = "../data"
-CHECKPOINT_PATH="../saved_models"
+CHECKPOINT_PATH = "../saved_models"
+
 
 def set_seed(seed):
     random.seed(seed)
@@ -84,40 +86,48 @@ def setup_CIFAR10_data(args: argparse.Namespace):
         drop_last=False,
         num_workers=args.num_workers,
     )
-    return train_loader,val_loader,test_loader
+    return train_loader, val_loader, test_loader
 
-def train_model(model_name,args: argparse.Namespace,save_name=None,**kwargs):
+
+def train_model(model_name, args: argparse.Namespace, save_name=None, **kwargs):
     if save_name is None:
-        save_name=model_name
-    
-    device=torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-    num_gpus=1 if str(device)=="cuda:0" else 0
+        save_name = model_name
 
-    trainer=pl.Trainer(
-        default_root_dir=os.path.join(CHECKPOINT_PATH,save_name),
+    device = (
+        torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    )
+    num_gpus = 1 if str(device) == "cuda:0" else 0
+
+    trainer = pl.Trainer(
+        default_root_dir=os.path.join(CHECKPOINT_PATH, save_name),
         gpus=num_gpus,
         max_epochs=args.num_epochs,
-        callbacks=[ModelCheckpoint(save_weights_only=True,mode="max",monitor="val_acc"),LearningRateMonitor("epoch")],
-        progress_bar_refresh_rate=1
+        callbacks=[
+            ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_acc"),
+            LearningRateMonitor("epoch"),
+        ],
+        progress_bar_refresh_rate=1,
     )
-    trainer.logger._log_graph=True
-    trainer.logger._default_hp_metric=None
-    
-    train_loader,val_loader,test_loader=setup_CIFAR10_data(args)
+    trainer.logger._log_graph = True
+    trainer.logger._default_hp_metric = None
 
-    pretrained_filename=os.path.join(CHECKPOINT_PATH,save_name + ".ckpt")
+    train_loader, val_loader, test_loader = setup_CIFAR10_data(args)
+
+    pretrained_filename = os.path.join(CHECKPOINT_PATH, save_name + ".ckpt")
     if os.path.isfile(pretrained_filename):
         print(f"Pretrained Model found. Loading the model: {pretrained_filename}")
-        model=CIFARModule.load_from_checkpoint(pretrained_filename)
+        model = CIFARModule.load_from_checkpoint(pretrained_filename)
     else:
         pl.seed_everything(args.manual_seed)
-        model=CIFARModule(model_name=model_name,**kwargs)
-        trainer.fit(model,train_loader,val_loader)
-        model=CIFARModule.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
-    
-    val_result=trainer.test(model,val_loader,verbose=False)
-    test_result=trainer.test(model,test_loader,verbose=False)
-    result={"test":test_result[0]["test_acc"],"val":val_result[0]["test_acc"]}
+        model = CIFARModule(model_name=model_name, **kwargs)
+        trainer.fit(model, train_loader, val_loader)
+        model = CIFARModule.load_from_checkpoint(
+            trainer.checkpoint_callback.best_model_path
+        )
+
+    val_result = trainer.test(model, val_loader, verbose=False)
+    test_result = trainer.test(model, test_loader, verbose=False)
+    result = {"test": test_result[0]["test_acc"], "val": val_result[0]["test_acc"]}
 
     return model, result
 
@@ -128,7 +138,7 @@ def train(args: argparse.Namespace):
     pl.seed_everything(seed)
 
     print("main")
-    model_dict={}
+    model_dict = {}
 
 
 def main():
